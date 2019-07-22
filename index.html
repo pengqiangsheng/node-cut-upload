@@ -73,11 +73,23 @@
 <body>
     <div class="container">
         <div class="row">
-            <div class="col-md-4">点击上传按钮</div>
+            <div class="col-md-4"><h1>基于Node分片上传demo</h1></div>
+            <div class="col-md-4"><p>1.支持断点续传、暂停上传</p></div>
+            <div class="col-md-4"><p>2.操作简单、代码易于理解</p></div>
+            <div class="col-md-4"><p>3.支持修改、易于移植开发</p></div>
+            <div class="col-md-4"><p>4.项目结构</p></div>
+            <div class="col-md-4">
+                <p>|--bootstrap // UI库<br>|--lib // 依赖的js库<br>|--nodeServer // 服务端文件夹，用于存放上传文件
+                    <br>|----index.html // 本页面<br>|----upload.js // 服务端主程序<br>|----package.json // 项目配置
+                </p>
+            </div>
             <div class="col-md-8">
                 <div class="wrap btn btn-default">
                     <input type="file" id="file" />
                     <p>上传文件</p>
+                </div>
+                <div id="pauseBtn" class="wrap btn btn-default">
+                    <p id="mytext">暂停</p>
                 </div>
             </div>
         </div>
@@ -105,11 +117,15 @@
     <script src="./lib/spark-md5.min.js"></script>
     <script>
         let baseUrl = 'http://localhost:5000'
-        let chunkSize = 1 * 1024 * 1024
+        let chunkSize = 1 * 1024 * 1024 // 切片的大小
+        let globalFileMd5Value = null
         let fileSize = 0
         let file = null
         let hasUploaded = 0
         let chunks = 0
+        let pause = false // 暂停
+        let skip = false // 断点续传，跳过标志
+        let globalResult = null
         // spark = new SparkMD5.ArrayBuffer()
         $("#file").on('change', function () {
             file = this.files[0]
@@ -117,27 +133,53 @@
             responseChange(file)
         })
 
+        // 暂停逻辑处理
+        $('#pauseBtn').on('click', () => {
+            pause = !pause
+            let pText = $('#mytext')
+            if(pause) {
+                console.log('..pause')
+                alert('已经暂停上传！')
+                pText.text('继续')
+            }else {
+                console.log('..go on')
+                alert('继续上传...')
+                pText.text('暂停')
+                responseChange(file)
+            }
+        })
+
         // 0.响应点击
         async function responseChange(file) {
-            // 第一步：按照 修改时间+文件名称+最后修改时间-->MD5
-            // 显示文件校验进度
-            $("#process1").slideDown(200)
-            // 开始校验
-            let fileMd5Value = await md5File(file)
+            // 如果是断点续传，跳过校验md5
+            if(!skip) {
+                // 第一步：按照 修改时间+文件名称+最后修改时间-->MD5
+                // 显示文件校验进度
+                $("#process1").slideDown(200)
+                // 开始校验
+                globalFileMd5Value = await md5File(file)
+            }
             // 第二步：校验文件的MD5
-            let result = await checkFileMD5(file.name, fileMd5Value)
+            globalResult = await checkFileMD5(file.name, globalFileMd5Value)
+            console.log(globalResult)
             // 如果文件已存在, 就秒传
-            if (result.file) {
+            if (globalResult.file) {
                 alert('文件已秒传')
                 return
+            } else {
+                skip = true
             }
             // let exit = false
             // 显示文件上传进度
             $("#process2").slideDown(200)
             // 第三步：检查并上传MD5
-            await checkAndUploadChunk(fileMd5Value, result.chunkList)
+            await checkAndUploadChunk(globalFileMd5Value, globalResult.chunkList)
             // 第四步: 通知服务器所有分片已上传完成
-            notifyServer(fileMd5Value)
+            // 如果暂停，取消通知文件合成
+            if(!pause) {
+                notifyServer(globalFileMd5Value)
+            }
+            
         }
 
         // 1.修改时间+文件名称+最后修改时间-->MD5
@@ -153,7 +195,7 @@
                     fileReader = new FileReader();
 
                 fileReader.onload = function (e) {
-                    console.log('read chunk nr', currentChunk + 1, 'of', chunks);
+                    // console.log('read chunk nr', currentChunk + 1, 'of', chunks);
                     spark.append(e.target.result); // Append array buffer
                     currentChunk++;
 
@@ -203,6 +245,9 @@
             hasUploaded = chunkList.length
             for (let i = 0; i < chunks; i++) {
                 let exit = chunkList.indexOf(i + "") > -1
+                if(pause) {
+                    return
+                }
                 // 如果已经存在, 则不用再上传当前块
                 if (!exit) {
                     let index = await upload(i, fileMd5Value, chunks)
